@@ -51,14 +51,17 @@ async def search_products(
         # Buscar melhor oferta (menor preço) nos últimos 7 dias
         seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
         
-        best_offer = await db.offers.find_one(
+        best_offer = await db.offers.find(
             {
                 "product_id": product["id"],
                 "supermarket_id": {"$in": supermarket_ids},
                 "collected_at": {"$gte": seven_days_ago.isoformat()}
             },
             {"_id": 0}
-        ).sort("price", 1)  # Ordenar por preço crescente
+        ).sort("price", 1).limit(1).to_list(1)  # Ordenar por preço crescente e pegar o primeiro
+        
+        if best_offer:
+            best_offer = best_offer[0]
         
         if best_offer:
             # Buscar dados do supermercado
