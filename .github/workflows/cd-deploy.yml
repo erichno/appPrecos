@@ -1,0 +1,154 @@
+name: CD - Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  # ========== DEPLOY BACKEND ==========
+  deploy-backend:
+    name: Deploy Backend API
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Deploy to Railway (Backend)
+        if: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          echo "🚂 Deploying backend to Railway..."
+          # Instalar Railway CLI
+          npm i -g @railway/cli
+          
+          # Deploy
+          cd backend
+          railway link ${{ secrets.RAILWAY_PROJECT_ID }} || true
+          railway up --service backend
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        continue-on-error: true
+      
+      - name: Deploy to Render (Backend)
+        if: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          echo "🎨 Deploying backend to Render..."
+          curl -X POST "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Content-Type: application/json"
+        continue-on-error: true
+      
+      - name: Deployment Instructions
+        if: ${{ !secrets.RAILWAY_TOKEN && !secrets.RENDER_API_KEY }}
+        run: |
+          echo "⚠️  No deployment secrets configured."
+          echo ""
+          echo "To enable automatic deployment, add these secrets to your GitHub repo:"
+          echo ""
+          echo "For Railway:"
+          echo "  - RAILWAY_TOKEN: Your Railway API token"
+          echo "  - RAILWAY_PROJECT_ID: Your project ID"
+          echo ""
+          echo "For Render:"
+          echo "  - RENDER_API_KEY: Your Render API key"
+          echo "  - RENDER_SERVICE_ID: Your service ID"
+          echo ""
+          echo "Go to: Settings → Secrets and variables → Actions"
+
+  # ========== DEPLOY FRONTEND ==========
+  deploy-frontend:
+    name: Deploy Frontend
+    runs-on: ubuntu-latest
+    needs: deploy-backend
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+          cache-dependency-path: frontend/yarn.lock
+      
+      - name: Build frontend
+        env:
+          REACT_APP_BACKEND_URL: ${{ secrets.BACKEND_URL || 'https://api.melhorpreco.com' }}
+        run: |
+          cd frontend
+          yarn install --frozen-lockfile
+          yarn build
+      
+      - name: Deploy to Vercel
+        if: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          echo "▲ Deploying frontend to Vercel..."
+          npm i -g vercel
+          cd frontend
+          vercel --prod --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        continue-on-error: true
+      
+      - name: Deploy to Netlify
+        if: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+        run: |
+          echo "🌐 Deploying frontend to Netlify..."
+          npm i -g netlify-cli
+          cd frontend
+          netlify deploy --prod --dir=build --site=${{ secrets.NETLIFY_SITE_ID }}
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+        continue-on-error: true
+      
+      - name: Deployment Instructions
+        if: ${{ !secrets.VERCEL_TOKEN && !secrets.NETLIFY_AUTH_TOKEN }}
+        run: |
+          echo "⚠️  No frontend deployment configured."
+          echo ""
+          echo "To enable automatic frontend deployment, add secrets:"
+          echo ""
+          echo "For Vercel:"
+          echo "  - VERCEL_TOKEN: Your Vercel token"
+          echo "  - VERCEL_ORG_ID: Your org ID"
+          echo "  - VERCEL_PROJECT_ID: Your project ID"
+          echo ""
+          echo "For Netlify:"
+          echo "  - NETLIFY_AUTH_TOKEN: Your Netlify token"
+          echo "  - NETLIFY_SITE_ID: Your site ID"
+
+  # ========== POST-DEPLOY CHECKS ==========
+  post-deploy:
+    name: Post-Deployment Health Check
+    runs-on: ubuntu-latest
+    needs: [deploy-backend, deploy-frontend]
+    if: always()
+    
+    steps:
+      - name: Health check backend
+        if: ${{ secrets.BACKEND_URL }}
+        run: |
+          echo "🏥 Checking backend health..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.BACKEND_URL }}/api/ || echo "000")
+          
+          if [ "$response" = "200" ]; then
+            echo "✅ Backend is healthy (HTTP $response)"
+          else
+            echo "⚠️  Backend health check returned HTTP $response"
+          fi
+        continue-on-error: true
+      
+      - name: Deployment summary
+        run: |
+          echo "📊 Deployment Summary:"
+          echo "========================"
+          echo "Backend: ${{ needs.deploy-backend.result }}"
+          echo "Frontend: ${{ needs.deploy-frontend.result }}"
+          echo ""
+          echo "🎉 Deployment pipeline completed!"

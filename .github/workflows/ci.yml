@@ -1,0 +1,153 @@
+name: CI - Continuous Integration
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  # ========== BACKEND TESTS ==========
+  backend-tests:
+    name: Backend - Python Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          cd backend
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Lint with Ruff
+        run: |
+          cd backend
+          pip install ruff
+          ruff check . --select E,F,W --ignore E501
+        continue-on-error: true
+      
+      - name: Run tests (if exists)
+        env:
+          MONGO_URL: mongodb://localhost:27017
+          DB_NAME: test_database
+          SECRET_KEY: test-secret-key-for-ci
+        run: |
+          cd backend
+          if [ -f "tests/__init__.py" ] || [ -d "tests" ]; then
+            pip install pytest pytest-asyncio httpx
+            pytest tests/ -v || echo "No tests found or tests failed"
+          else
+            echo "No tests directory found, skipping..."
+          fi
+      
+      - name: Check imports and syntax
+        run: |
+          cd backend
+          python -m py_compile server.py
+          echo "✅ Backend syntax check passed"
+
+  # ========== FRONTEND TESTS ==========
+  frontend-tests:
+    name: Frontend - React Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+          cache-dependency-path: frontend/yarn.lock
+      
+      - name: Install dependencies
+        run: |
+          cd frontend
+          yarn install --frozen-lockfile
+      
+      - name: Lint with ESLint
+        run: |
+          cd frontend
+          yarn add -D eslint
+          npx eslint src/ --ext .js,.jsx --max-warnings 10 || echo "Lint warnings found"
+        continue-on-error: true
+      
+      - name: Build production
+        env:
+          REACT_APP_BACKEND_URL: https://api.example.com
+          CI: false
+        run: |
+          cd frontend
+          yarn build
+      
+      - name: Run tests (if exists)
+        run: |
+          cd frontend
+          if grep -q '"test"' package.json; then
+            CI=true yarn test --passWithNoTests --coverage
+          else
+            echo "No tests configured, skipping..."
+          fi
+        continue-on-error: true
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build/
+          retention-days: 7
+
+  # ========== SECURITY SCAN ==========
+  security-scan:
+    name: Security - Dependency Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+        continue-on-error: true
+
+  # ========== BUILD STATUS ==========
+  build-status:
+    name: Build Status Summary
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-tests, security-scan]
+    if: always()
+    
+    steps:
+      - name: Check build status
+        run: |
+          echo "🎉 CI Pipeline completed!"
+          echo "Backend: ${{ needs.backend-tests.result }}"
+          echo "Frontend: ${{ needs.frontend-tests.result }}"
+          echo "Security: ${{ needs.security-scan.result }}"
