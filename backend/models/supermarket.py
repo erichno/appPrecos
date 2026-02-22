@@ -50,6 +50,3 @@ class SupermarketResponse(BaseModel):
     rating: float
     total_reviews: int
     distance_km: Optional[float] = None
-
-
-from typing import List
